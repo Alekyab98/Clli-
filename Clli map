@@ -1,0 +1,35 @@
+-- Create the table with primary and secondary FQDNs
+WITH PrimaryFQDNs AS (
+  -- Extract primary FQDNs based on the naming convention
+  SELECT
+    SiteCLLI AS primary_clli,
+    CASE
+      WHEN fqdn LIKE '%-consp%' THEN CONCAT(SiteCLLI, 'vzwcsmf-y-ec-consp-001')
+      WHEN fqdn LIKE '%-entrp%' THEN CONCAT(SiteCLLI, 'vzwcsmf-y-ec-entrp-001')
+      WHEN fqdn LIKE '%-ec-p%' THEN CONCAT(SiteCLLI, 'vzwcsmf-y-ec-ec-p-001')
+      ELSE NULL
+    END AS primary_fqdn
+  FROM `project.dataset.smf_table`
+  WHERE SiteCLLI IS NOT NULL
+),
+SecondaryFQDNs AS (
+  -- Extract secondary FQDNs based on the naming convention and pair mapping
+  SELECT
+    Pair AS secondary_clli,
+    CASE
+      WHEN fqdn LIKE '%-conss%' THEN CONCAT(Pair, 'vzwcsmf-y-ec-conss-001')
+      WHEN fqdn LIKE '%-entrs%' THEN CONCAT(Pair, 'vzwcsmf-y-ec-entrs-001')
+      WHEN fqdn LIKE '%-ec-s%' THEN CONCAT(Pair, 'vzwcsmf-y-ec-ec-s-001')
+      ELSE NULL
+    END AS secondary_fqdn
+  FROM `project.dataset.sapsites_table`
+  WHERE Pair IS NOT NULL
+)
+-- Map primary FQDNs to their respective secondary FQDNs
+SELECT
+  p.primary_fqdn,
+  s.secondary_fqdn
+FROM PrimaryFQDNs p
+LEFT JOIN SecondaryFQDNs s
+  ON p.primary_clli = s.secondary_clli
+WHERE p.primary_fqdn IS NOT NULL AND s.secondary_fqdn IS NOT NULL;
