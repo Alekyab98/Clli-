@@ -1,0 +1,31 @@
+--create or replace table vz-it-np-gudv-dev-dtwndo-0.aid_nwperf_aether_core_tbls.primary_secondary_fqdn
+with data_1 as (
+select distinct a.fqdn,`Site CLLI`,pair
+from `vz-it-pr-gudv-dtwndo-0.aid_nwperf_aether_core_tbls_v.aether_smf_performance` a
+LEFT JOIN vz-it-np-gudv-dev-dtwndo-0.aid_nwperf_aether_core_tbls.sap_site_mapping b
+ON
+lower(SUBSTR(a.fqdn,1,8))=lower(coalesce(b.`Site CLLI`,b.`Pair`))
+where a.trans_dt is not null
+--order by primary_fqdn
+),
+data_2 as (select distinct
+case 
+when fqdn like '%ec-p%' or  fqdn like '%consp%' or fqdn like '%entrp%' then fqdn
+else null
+end as primary_fqdn,
+a.*
+--,
+
+from data_1 a)
+select primary_fqdn,
+ CASE
+      WHEN UPPER(SUBSTR(primary_fqdn,1,8)) IN (`Site CLLI`)  THEN CONCAT(Pair,'-', 'vzwcsmf-y-ec-conss-001')
+      --WHEN UPPER(SUBSTR(primary_fqdn,1,8)) IN (`Site CLLI`)  THEN CONCAT(Pair,'-', 'vzwcsmf-y-ec-conss-001')
+      --WHEN UPPER(SUBSTR(primary_fqdn,1,8)) IN (`Site CLLI`) THEN CONCAT(Pair,'-', 'vzwcsmf-y-ec-conss-001')
+      -- WHEN primary_fqdn LIKE '%-entrs%' THEN CONCAT(Pair,'-', 'vzwcsmf-y-ec-entrs-001')
+      -- WHEN primary_fqdn LIKE '%-ec-s%' THEN CONCAT(Pair,'-', 'vzwcsmf-y-ec-ec-s-001')
+      ELSE NULL
+    END AS secondary_fqdn
+ from data_2 a
+where primary_fqdn iS not null
+order by primary_fqdn
