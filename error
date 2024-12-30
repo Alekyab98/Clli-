@@ -1,0 +1,49 @@
+-- Final Query
+WITH data_1 AS (
+  -- Join the SMF performance table with SAP site mapping
+  SELECT DISTINCT 
+    a.fqdn, 
+    b.`Site CLLI`, 
+    b.`Pair`
+  FROM `vz-it-pr-gudv-dtwndo-0.aid_nwperf_aether_core_tbls_v.aether_smf_performance` a
+  LEFT JOIN `vz-it-np-gudv-dev-dtwndo-0.aid_nwperf_aether_core_tbls.sap_site_mapping` b
+    ON LOWER(SUBSTR(a.fqdn, 1, 8)) = LOWER(COALESCE(b.`Site CLLI`, b.`Pair`))
+  WHERE a.trans_dt IS NOT NULL
+),
+data_2 AS (
+  -- Derive primary and secondary FQDNs
+  SELECT DISTINCT
+    CASE 
+      WHEN fqdn LIKE '%ec-p%' OR fqdn LIKE '%consp%' OR fqdn LIKE '%entrp%' THEN fqdn
+      ELSE NULL
+    END AS primary_fqdn,
+    CASE 
+      WHEN fqdn LIKE '%ec-s%' OR fqdn LIKE '%conss%' OR fqdn LIKE '%entrs%' THEN fqdn
+      ELSE NULL
+    END AS secondary_fqdn,
+    `Site CLLI`,
+    Pair
+  FROM data_1
+),
+final_data AS (
+  -- Map primary FQDNs to their corresponding secondary FQDNs based on the pair
+  SELECT DISTINCT
+    d2.primary_fqdn,
+    d2.secondary_fqdn,
+    CASE
+      WHEN UPPER(SUBSTR(d2.primary_fqdn, 1, 8)) = UPPER(d2.`Site CLLI`)
+       THEN 
+        (SELECT secondary_fqdn 
+         FROM data_2 d3 
+         WHERE UPPER(SUBSTR(d3.secondary_fqdn, 1, 8)) = UPPER(d2.Pair))
+         and SUBSTR(d2.primary_fqdn,-9,5)= SUBSTR(d2.secondary_fqdn,-9,5)
+      ELSE NULL
+    END AS mapped_secondary_fqdn
+  FROM data_2 d2
+  WHERE d2.primary_fqdn IS NOT NULL
+)
+SELECT 
+  primary_fqdn,
+  mapped_secondary_fqdn
+FROM final_data
+ORDER BY primary_fqdn;
