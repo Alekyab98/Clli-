@@ -1,0 +1,164 @@
+import csv
+import json
+import subprocess
+from datetime import datetime, timezone
+from urllib.parse import quote
+
+# Function to load API keys from a file
+def load_api_keys(filename):
+    api_keys = {}
+    with open(filename, 'r') as file:
+        for line in file:
+            line = line.strip()
+            if line:
+                function_name, key = line.split(':', 1)
+                api_keys[function_name] = key.strip()
+    return api_keys
+
+# Function to convert epoch time to readable UTC timestamp
+def convert_epoch_to_timestamp(epoch_time):
+    return datetime.fromtimestamp(int(epoch_time), tz=timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
+
+# Function to extract date from timestamp (YYYY-MM-DD format)
+def extract_date_from_timestamp(timestamp):
+    return timestamp.split(' ')[0]
+
+# Function to safely convert data to JSON
+def safe_json_dumps(data):
+    try:
+        return json.dumps(data)
+    except Exception as e:
+        print("JSON Error:", e, data)
+        return "{}"
+
+# Function to execute curl command and get raw JSON data
+def execute_curl_and_get_data(curl_command):
+    result = subprocess.run(curl_command, shell=True, capture_output=True, text=True)
+    if result.returncode != 0:
+        print(f"Error executing curl command: {result.stderr}")
+        return None
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError as e:
+        print(f"Error parsing JSON response: {e}")
+        return None
+
+# Function to process a single metric query and return rows with all label combinations
+def fetch_metric_data(curl_command, metric_name, column_name):
+    response_data = execute_curl_and_get_data(curl_command)
+    if not response_data or response_data.get('status') != 'success':
+        print(f"No data found for query: {curl_command}")
+        return {}
+
+    data_rows = {}
+
+    for result in response_data['data']['result']:
+        labels = {k: v for k, v in result['metric'].items()}  # Extract all labels
+        fqdn = result['metric'].get('kubernetes_namespace', result['metric'].get('localdn', 'unknown'))  # Extract FQDN
+        for value in result['values']:
+            event_time = convert_epoch_to_timestamp(value[0])
+            transdt = extract_date_from_timestamp(event_time)
+            metric_value = str(value[1])  # Explicitly convert metric value to string
+
+            # Debug: Check types of metric_value
+            print(f"Fetched metric_value for {column_name}: {metric_value} (type: {type(metric_value)})")
+
+            # Create a unique key based on all label combinations and event time
+            key = (metric_name, fqdn, tuple(sorted(labels.items())), event_time)
+
+            if key not in data_rows:
+                data_rows[key] = {
+                    "metric_name": metric_name,
+                    "FQDN": fqdn,
+                    "labels": safe_json_dumps(labels),
+                    "event_time": event_time,
+                    "transdt": transdt,
+                    "metric_sum": None,
+                    "metric_increase": None
+                }
+
+            # Update the specific column (metric_sum or metric_increase) for this key
+            data_rows[key][column_name] = metric_value  # Ensure string type here
+
+    return data_rows
+
+# Function to process and combine sum_over_time and increase queries for each metric
+def fetch_combined_metrics(input_files, api_keys, output_file):
+    start_epoch = '1724198400'  # Example start time
+    end_epoch = '1719792000'    # Example end time
+    step = '1h'
+
+    combined_data_rows = {}
+
+    # Open CSV file to write combined results
+    with open(output_file, mode='w', newline='') as csv_file:
+        fieldnames = ["metric_name", "FQDN", "labels", "event_time", "transdt", "metric_sum", "metric_increase"]
+        writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
+        writer.writeheader()
+
+        for input_file, function_name in input_files.items():
+            encoded_api_key = api_keys.get(function_name)
+            if not encoded_api_key:
+                print(f"Skipping {function_name} due to missing API key.")
+                continue
+
+            with open(input_file, 'r') as file:
+                for metric_name in file:
+                    metric_name = metric_name.strip()
+                    if not metric_name:
+                        continue
+
+                    # Query A: sum_over_time
+                    query_sum = f'sum_over_time({metric_name}[1h])'
+                    curl_command_sum = (
+                        f"curl --location --globoff \"https://us.aether.nss.vzwnet.com/gem/prometheus/api/v1/query_range?"
+                        f"query={quote(query_sum)}&start={start_epoch}&end={end_epoch}&step={step}\""
+                        f" --header \"Authorization: Basic {encoded_api_key}\""
+                    )
+                    sum_data = fetch_metric_data(curl_command_sum, metric_name, "metric_sum")
+
+                    # Query B: increase
+                    query_increase = f'increase({metric_name}[1h])'
+                    curl_command_increase = (
+                        f"curl --location --globoff \"https://us.aether.nss.vzwnet.com/gem/prometheus/api/v1/query_range?"
+                        f"query={quote(query_increase)}&start={start_epoch}&end={end_epoch}&step={step}\""
+                        f" --header \"Authorization: Basic {encoded_api_key}\""
+                    )
+                    increase_data = fetch_metric_data(curl_command_increase, metric_name, "metric_increase")
+
+                    # Combine results from both queries
+                    for key in set(sum_data.keys()).union(increase_data.keys()):
+                        if key not in combined_data_rows:
+                            combined_data_rows[key] = {
+                                "metric_name": sum_data.get(key, {}).get("metric_name") or increase_data.get(key, {}).get("metric_name"),
+                                "FQDN": sum_data.get(key, {}).get("FQDN") or increase_data.get(key, {}).get("FQDN"),
+                                "labels": sum_data.get(key, {}).get("labels") or increase_data.get(key, {}).get("labels"),
+                                "event_time": sum_data.get(key, {}).get("event_time") or increase_data.get(key, {}).get("event_time"),
+                                "transdt": sum_data.get(key, {}).get("transdt") or increase_data.get(key, {}).get("transdt"),
+                                "metric_sum": str(sum_data.get(key, {}).get("metric_sum") or ""),  # Explicitly cast to string
+                                "metric_increase": str(increase_data.get(key, {}).get("metric_increase") or "")  # Explicitly cast to string
+                            }
+
+        # Write all combined rows to the CSV
+        for row in combined_data_rows.values():
+            print(f"Writing row to CSV: {row}")  # Debug: Check row data types
+            writer.writerow({k: str(v) for k, v in row.items()})  # Force all values to strings
+
+    print(f"Combined data written to CSV: {output_file}")
+
+# Main execution block
+if __name__ == "__main__":
+    input_files = {
+        #"smf_metrics.txt": "smf",
+        "upf_metrics.txt": "upf",
+    }
+
+    # API keys file
+    api_keys_file = "api_keys.txt"
+
+    # Output CSV file
+    output_file = "upf_data.csv"
+
+    # Load API keys and process metrics
+    api_keys = load_api_keys(api_keys_file)
+    fetch_combined_metrics(input_files, api_keys, output_file)
