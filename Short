@@ -1,0 +1,50 @@
+CREATE OR REPLACE TABLE `vz-it-np-gudv-dev-dtwndo-0.aid_nwperf_aether_core_tbls.fqdn_table` AS
+WITH data AS (
+  -- Combine initial data fetching and primary/secondary FQDN mapping
+  SELECT DISTINCT
+    a.fqdn,
+    b.`Site Name`,
+    b.region,
+    b.longitude,
+    b.latitude,
+    b.Timezone,
+    b.`Site CLLI`,
+    b.`Pair`,
+    CASE 
+      WHEN fqdn LIKE '%ec-p%' OR fqdn LIKE '%consp%' OR fqdn LIKE '%entrp%' THEN fqdn
+    END AS primary_fqdn,
+    CASE 
+      WHEN fqdn LIKE '%ec-s%' OR fqdn LIKE '%conss%' OR fqdn LIKE '%entrs%' THEN fqdn
+    END AS secondary_fqdn
+  FROM `vz-it-pr-gudv-dtwndo-0.aid_nwperf_aether_core_tbls_v.aether_smf_performance` a
+  LEFT JOIN `vz-it-np-gudv-dev-dtwndo-0.aid_nwperf_aether_core_tbls.sap_site_mapping` b
+    ON LOWER(SUBSTR(a.fqdn, 1, 8)) = LOWER(COALESCE(b.`Site CLLI`, b.`Pair`))
+  WHERE a.trans_dt IS NOT NULL
+),
+final_data AS (
+  -- Map primary FQDNs to their corresponding secondary FQDNs
+  SELECT DISTINCT
+    d1.`Site Name`,
+    d1.region,
+    d1.longitude,
+    d1.latitude,
+    d1.Timezone,
+    d1.primary_fqdn,
+    d2.secondary_fqdn
+  FROM data d1
+  LEFT JOIN data d2
+    ON LOWER(SUBSTR(d2.secondary_fqdn, 1, 8)) = LOWER(d1.`Pair`)
+       AND SUBSTR(d2.secondary_fqdn, -9, 3) = SUBSTR(d1.primary_fqdn, -9, 3)
+       AND SUBSTR(d2.secondary_fqdn, -3, 3) = SUBSTR(d1.primary_fqdn, -3, 3)
+  WHERE d1.primary_fqdn IS NOT NULL
+)
+SELECT 
+  primary_fqdn,
+  secondary_fqdn,
+  `Site Name`,
+  region,
+  longitude,
+  latitude,
+  Timezone
+FROM final_data
+ORDER BY primary_fqdn;
