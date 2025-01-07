@@ -1,0 +1,127 @@
+WITH 
+  null_agg AS (
+    SELECT trans_dt, event_time, fqdn, vendor, MAX(TO_JSON_STRING(labels)) AS labels,
+      SAFE_CAST(SUM(
+        CASE
+          WHEN metric_name = 'ggsn_nbr_of_subscribers' AND JSON_VALUE(labels, '$.group') = 'ggsn_global_stats' THEN CAST(metric_sum_value AS FLOAT64)
+          ELSE NULL
+        END) AS FLOAT64) AS total_subscribers
+    FROM `vz-it-pr-gudv-dtwndo-0.aid_nwperf_aether_core_tbls_v.aether_smf_performance`
+    WHERE trans_dt = '2024-12-20' 
+      AND fqdn = 'alprgagqvzwcsmf-y-ec-conss-001'
+    GROUP BY trans_dt, event_time, vendor, fqdn
+  ),
+  not_null_agg AS (
+    SELECT trans_dt, event_time, fqdn, vendor, TO_JSON_STRING(labels) AS labels,
+      SAFE_CAST(SUM(
+        CASE
+          WHEN metric_name = 'active_sessions' AND JSON_VALUE(labels, '$.group') = 'apn_pgw_upf_stats' THEN CAST(metric_sum_value AS FLOAT64)
+          ELSE NULL
+        END) AS FLOAT64) AS active_sessions
+    FROM `vz-it-pr-gudv-dtwndo-0.aid_nwperf_aether_core_tbls_v.aether_smf_performance`
+    WHERE trans_dt = '2024-12-20'
+      AND fqdn = 'alprgagqvzwcsmf-y-ec-conss-001'
+    GROUP BY trans_dt, event_time, vendor, fqdn, labels
+  ),
+  null_unnset AS (
+    SELECT trans_dt, event_time, vendor, fqdn, metric.metric_name AS metric_name, SUM(metric.metric_value) AS value,
+      SAFE_CAST(NULL AS STRING) AS key_group
+    FROM null_agg,
+      UNNEST([
+        STRUCT('total_subscribers' AS metric_name, null_agg.total_subscribers AS metric_value)
+      ]) AS metric
+    GROUP BY trans_dt, event_time, vendor, fqdn, metric_name, key_group
+  ),
+  not_null_unnset AS (
+    SELECT trans_dt, event_time, vendor, fqdn, metric.metric_name AS metric_name, SUM(metric.metric_value) AS value,
+      metric.group_by_label AS key_group
+    FROM not_null_agg,
+      UNNEST([
+        STRUCT('active_sessions' AS metric_name, not_null_agg.active_sessions AS metric_value,
+          TO_JSON_STRING(STRUCT('apn' AS group_by_key_name, JSON_VALUE(labels, '$.apn') AS group_by_key_value)) AS group_by_label)
+      ]) AS metric
+    GROUP BY trans_dt, event_time, vendor, fqdn, metric_name, key_group
+  ),
+  fqdn_data AS (
+    -- FQDN mapping logic
+    SELECT DISTINCT
+      a.fqdn AS primary_fqdn,
+      CASE 
+        WHEN fqdn LIKE '%ec-s%' OR fqdn LIKE '%conss%' OR fqdn LIKE '%entrs%' THEN fqdn
+      END AS secondary_fqdn,
+      b.`Site Name` AS site_name,
+      b.region,
+      b.longitude,
+      b.latitude,
+      b.Timezone,
+      b.`Pair`
+    FROM `vz-it-pr-gudv-dtwndo-0.aid_nwperf_aether_core_tbls_v.aether_smf_performance` a
+    LEFT JOIN `vz-it-np-gudv-dev-dtwndo-0.aid_nwperf_aether_core_tbls.sap_site_mapping` b
+      ON LOWER(SUBSTR(a.fqdn, 1, 8)) = LOWER(COALESCE(b.`Site CLLI`, b.`Pair`))
+    WHERE a.trans_dt = '2024-12-20'
+  ),
+  final_data AS (
+    -- Map primary and secondary FQDNs correctly
+    SELECT DISTINCT
+      d1.primary_fqdn,
+      d2.secondary_fqdn,
+      d1.site_name,
+      d1.region,
+      d1.longitude,
+      d1.latitude,
+      d1.Timezone
+    FROM fqdn_data d1
+    LEFT JOIN fqdn_data d2
+      ON LOWER(SUBSTR(d2.secondary_fqdn, 1, 8)) = LOWER(d1.`Pair`)
+         AND SUBSTR(d2.secondary_fqdn, -9, 3) = SUBSTR(d1.primary_fqdn, -9, 3)
+         AND SUBSTR(d2.secondary_fqdn, -3, 3) = SUBSTR(d1.primary_fqdn, -3, 3)
+    WHERE d1.primary_fqdn IS NOT NULL
+  ),
+  primary_fqdn_mapping AS (
+    -- Map the primary FQDN to the correct secondary FQDN
+    SELECT 
+      smf.*,
+      COALESCE(
+        (SELECT primary_fqdn FROM final_data WHERE final_data.secondary_fqdn = smf.fqdn),
+        smf.fqdn
+      ) AS primary_fqdn
+    FROM (
+      SELECT 
+        trans_dt, 
+        event_time, 
+        vendor, 
+        fqdn, 
+        metric_name, 
+        value, 
+        key_group
+      FROM null_unnset
+      UNION ALL
+      SELECT 
+        trans_dt, 
+        event_time, 
+        vendor, 
+        fqdn, 
+        metric_name, 
+        value, 
+        key_group
+      FROM not_null_unnset
+    ) smf
+  )
+SELECT 
+  pm.trans_dt,
+  pm.event_time,
+  pm.vendor,
+  pm.fqdn,
+  pm.metric_name,
+  pm.value,
+  pm.key_group,
+  pm.primary_fqdn,
+  fd.site_name,
+  fd.region,
+  fd.longitude,
+  fd.latitude,
+  fd.Timezone
+FROM primary_fqdn_mapping pm
+LEFT JOIN final_data fd
+  ON pm.primary_fqdn = fd.primary_fqdn
+ORDER BY primary_fqdn;
