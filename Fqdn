@@ -1,0 +1,7 @@
+SELECT 
+  fqdn,
+  TO_BASE64(SHA512(REGEXP_REPLACE(TRIM(CAST(fqdn AS STRING)), r'[^[:print:]]', ''))) AS hashed_fqdn_cleaned,
+  TO_BASE64(SHA512(CAST('alprgagqvzwcsmf-y-ec-consp-001' AS STRING))) AS hashed_fqdn_hardcoded
+FROM `vz-it-pr-gudv-dtwndo-0.aid_nwperf_aether_core_tbls_v.aether_smf_performance`
+WHERE fqdn = 'alprgagqvzwcsmf-y-ec-consp-001'
+LIMIT 10;
